@@ -629,6 +629,11 @@ table.report-tbl td{padding:0;vertical-align:top}
       <div style="display:flex;align-items:center;gap:8px">
         <button class="btn" onclick="saveNotes()">저장</button>
         <button class="btn" onclick="loadNotes()">불러오기</button>
+        <button class="btn" onclick="exportJSON()" title="메모+리뷰 전체를 JSON으로 내보내기">📤 내보내기</button>
+        <div style="position:relative;display:inline-block">
+          <button class="btn" onclick="document.getElementById('importFileInput').click()" title="다른 PC에서 내보낸 JSON 불러오기">📥 가져오기</button>
+          <input type="file" id="importFileInput" accept=".json" style="display:none" onchange="importJSON(this)">
+        </div>
         <button class="btn primary" onclick="window.print()">PDF 출력</button>
       </div>
     </div>
@@ -1976,6 +1981,74 @@ async function runAI(){
   if(errors===0){resultBadge.className='ai-result ok';resultBadge.textContent=`${done}건 완료`;await saveNotes();toast(`AI 분석 완료 — ${done}건`);}
   else if(done>0){resultBadge.className='ai-result err';resultBadge.textContent=`완료 ${done}건 · 오류 ${errors}건`;}
   else{resultBadge.className='ai-result err';resultBadge.textContent='연결 실패';}
+}
+
+/* ── JSON 내보내기 / 가져오기 ── */
+async function exportJSON(){
+  _collectNotesFromDOM();
+  /* notes + hiddenRows + 리뷰 원본까지 묶어서 내보내기 */
+  const payload={
+    version:7,
+    exportedAt:new Date().toISOString(),
+    notes,
+    hiddenRows,
+    /* 리뷰 원본도 함께 — 다른 PC에서 엑셀 없이도 볼 수 있게 */
+    reviews:ALL_REVIEWS,
+  };
+  const json=JSON.stringify(payload,null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='sloubed_backup_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('내보내기 완료 — JSON 파일을 다른 PC에서 가져오기로 불러오세요');
+}
+
+async function importJSON(input){
+  const file=input.files[0];if(!file)return;
+  input.value='';
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const payload=JSON.parse(e.target.result);
+      if(!payload.notes){toast('올바른 백업 파일이 아닙니다');return;}
+
+      /* notes, hiddenRows 복원 */
+      notes=payload.notes||{};
+      hiddenRows=payload.hiddenRows||{};
+      await dbPut('notes',{key:'all',data:notes});
+      await dbPut('notes',{key:'hidden',data:hiddenRows});
+
+      /* 리뷰 원본 복원 (있는 경우) */
+      if(payload.reviews&&payload.reviews.length){
+        const existing=new Set(ALL_REVIEWS.map(r=>r.id));
+        let added=0;
+        for(const rev of payload.reviews){
+          if(!existing.has(rev.id)){
+            /* isComplaint 재계산 */
+            rev.isComplaint=isComplaint(rev.content||'',rev.r||5);
+            try{await dbPut('reviews',rev);added++;}catch(e){}
+          }
+        }
+        if(added>0){
+          await loadFromDB();
+          refreshAll();
+          toast(`가져오기 완료 — 메모 복원 + 리뷰 ${added}건 추가`);
+          return;
+        }
+      }
+      /* 리뷰 없이 메모만 복원 */
+      buildReport();
+      setTimeout(()=>loadAllImgCells(),80);
+      toast('가져오기 완료 — 메모와 숨김 상태가 복원됐습니다');
+    }catch(err){
+      console.error(err);
+      toast('가져오기 실패: 파일을 확인해주세요');
+    }
+  };
+  reader.readAsText(file);
 }
 
 async function saveNotes(){
